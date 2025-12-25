@@ -1,207 +1,138 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[codz]
-*$py.class
+import cv2
+import mediapipe as mp
+import pyautogui
+import numpy as np
+import time
 
-# C extensions
-*.so
+mp_hands = mp.solutions.hands
+mp_drawing = mp.solutions.drawing_utils
+screen_width, screen_height = pyautogui.size()
+cap = cv2.VideoCapture(0)
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+cv2.namedWindow('Hand Gesture Mouse', cv2.WINDOW_NORMAL)
+cv2.resizeWindow('Hand Gesture Mouse', 900, 700)
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+def get_dist(p1, p2):
+    return np.hypot(p1[0]-p2[0], p1[1]-p2[1])
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+click_buffer = []
+drag_mode = False
+click_time = 0
+last_palm_y = None
+SCROLL_SENS = 35  # Higher for less sensitivity, lower for more
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py.cover
-.hypothesis/
-.pytest_cache/
-cover/
+with mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7, min_tracking_confidence=0.7) as hands:
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame = cv2.flip(frame, 1)
+        h, w, _ = frame.shape
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = hands.process(rgb)
 
-# Translations
-*.mo
-*.pot
+        command = "Tracking"
+        gesture = None
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                lm = hand_landmarks.landmark
+                pts = [(int(l.x * w), int(l.y * h)) for l in lm]
 
-# Flask stuff:
-instance/
-.webassets-cache
+                index_tip, thumb_tip = pts[8], pts[4]
+                middle_tip = pts[12]
+                screen_x = np.interp(index_tip[0], [0, w], [0, screen_width])
+                screen_y = np.interp(index_tip[1], [0, h], [0, screen_height])
+                pyautogui.moveTo(screen_x, screen_y, duration=0)
+                cv2.circle(frame, index_tip, 11, (0,255,0), -1)
+                cv2.circle(frame, thumb_tip, 11, (255,0,0), -1)
+                cv2.circle(frame, middle_tip, 11, (0,255,255), -1)
 
-# Scrapy stuff:
-.scrapy
+                # Left click: index-thumb pinch
+                dist_it_tt = get_dist(index_tip, thumb_tip)
+                if dist_it_tt < 38:
+                    gesture = "Click!"
+                    if time.time()-click_time > 0.7:
+                        pyautogui.click()
+                        click_time = time.time()
+                        command = gesture
+                        print(command)
 
-# Sphinx documentation
-docs/_build/
+                # Right click: middle-thumb pinch
+                dist_mt_tt = get_dist(middle_tip, thumb_tip)
+                if dist_mt_tt < 38:
+                    gesture = "Right-Click!"
+                    pyautogui.rightClick()
+                    command = gesture
+                    print(command)
 
-# PyBuilder
-.pybuilder/
-target/
+                # Drag/select: index-middle pinch
+                dist_it_mt = get_dist(index_tip, middle_tip)
+                if dist_it_mt < 38:
+                    gesture = "Drag/Select"
+                    if not drag_mode:
+                        pyautogui.mouseDown()
+                        drag_mode = True
+                        command = gesture
+                        print(command)
+                else:
+                    if drag_mode:
+                        pyautogui.mouseUp()
+                        drag_mode = False
 
-# Jupyter Notebook
-.ipynb_checkpoints
+                # Double click: quick repeated index-thumb pinch
+                click_buffer.append(1 if dist_it_tt < 38 else 0)
+                if len(click_buffer) > 18:
+                    click_buffer.pop(0)
+                if sum(click_buffer) > 15:
+                    gesture = "Double Click!"
+                    pyautogui.doubleClick()
+                    command = gesture
+                    print(command)
+                    click_buffer = [0]*18
 
-# IPython
-profile_default/
-ipython_config.py
+                # Palm-center for scroll (use wrist: pts[0])
+                open_hand = (
+                    get_dist(pts[5], pts[8]) > 45 and
+                    get_dist(pts[9], pts[12]) > 45 and
+                    get_dist(pts[13], pts[16]) > 45 and
+                    get_dist(pts[17], pts[20]) > 45
+                )
+                palm_y = pts[0][1]
+                if open_hand:
+                    if last_palm_y is not None:
+                        # Negative value: moved up -> scroll up
+                        if palm_y < last_palm_y - SCROLL_SENS:
+                            gesture = "Scroll Up"
+                            pyautogui.scroll(60)
+                            command = gesture
+                            print(command)
+                        # Positive value: moved down -> scroll down
+                        elif palm_y > last_palm_y + SCROLL_SENS:
+                            gesture = "Scroll Down"
+                            pyautogui.scroll(-60)
+                            command = gesture
+                            print(command)
+                    last_palm_y = palm_y
+                else:
+                    last_palm_y = None
 
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
+                # Neon bold overlay
+                if gesture:
+                    cv2.putText(frame, gesture, (index_tip[0], index_tip[1]-40),
+                                cv2.FONT_HERSHEY_DUPLEX, 1.5, (0,255,255), 4)
+                cv2.putText(frame, "built by: Team 2", (frame.shape[1]-320, frame.shape[0]-25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,255,255), 2)
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
+        else:
+            drag_mode = False
+            last_palm_y = None
 
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#uv.lock
+        cv2.putText(frame, f"{command}", (35,60), cv2.FONT_HERSHEY_COMPLEX, 1.2, (255,0,255), 2)
+        cv2.imshow('Hand Gesture Mouse', frame)
+        if cv2.waitKey(1) == 27:
+            break
 
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
-#poetry.toml
-
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#   pdm recommends including project-wide configuration in pdm.toml, but excluding .pdm-python.
-#   https://pdm-project.org/en/latest/usage/project/#working-with-version-control
-#pdm.lock
-#pdm.toml
-.pdm-python
-.pdm-build/
-
-# pixi
-#   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
-#pixi.lock
-#   Pixi creates a virtual environment in the .pixi directory, just like venv module creates one
-#   in the .venv directory. It is recommended not to include this directory in version control.
-.pixi
-
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
-
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.envrc
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
-
-# Abstra
-# Abstra is an AI-powered process automation framework.
-# Ignore directories containing user credentials, local state, and settings.
-# Learn more at https://abstra.io/docs
-.abstra/
-
-# Visual Studio Code
-#  Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
-#  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#  and can be added to the global gitignore or merged into this file. However, if you prefer, 
-#  you could uncomment the following to ignore the entire vscode folder
-# .vscode/
-
-# Ruff stuff:
-.ruff_cache/
-
-# PyPI configuration file
-.pypirc
-
-# Cursor
-#  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
-#  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
-#  refer to https://docs.cursor.com/context/ignore-files
-.cursorignore
-.cursorindexingignore
-
-# Marimo
-marimo/_static/
-marimo/_lsp/
-__marimo__/
+cap.release()
+cv2.destroyAllWindows()
